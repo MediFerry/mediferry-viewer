@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="theme-color" content="#080a10">
 <meta name="description" content="MediFerry – animierter 360-Grad-Charakter-Viewer mit Regen, Nebel und Hafenlichtern.">
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js"}}</script>
 <title>MediFerry | 360° Character Viewer</title>
 <style>
 :root{color-scheme:dark;--violet:#c4a9ff;--white:#f5f3fa}
@@ -23,11 +24,11 @@ html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#080a10;col
 .nameplate{margin-top:4px;padding:10px 30px;border:1px solid #c6adff;border-radius:9px;background:linear-gradient(110deg,rgba(12,10,22,.94),rgba(34,25,52,.88),rgba(12,10,22,.94));box-shadow:0 0 22px #8f67ff66,inset 0 0 12px #8f67ff33;clip-path:polygon(8% 0,92% 0,100% 50%,92% 100%,8% 100%,0 50%)}
 .username{font-weight:900;letter-spacing:.08em;font-size:clamp(18px,2vw,25px);text-shadow:0 0 12px #cbb4ff}
 .stage{position:absolute;inset:0;display:grid;place-items:center;z-index:2}
-canvas{display:block;width:min(78vw,720px);height:min(82vh,820px);touch-action:none;cursor:grab;outline:none}
+canvas{display:block;width:min(92vw,900px);height:min(92vh,980px);touch-action:none;cursor:grab;outline:none}
 canvas:active{cursor:grabbing}
 .hint{position:absolute;bottom:clamp(18px,4vh,42px);left:50%;transform:translateX(-50%);z-index:3;padding:11px 18px;border-radius:30px;background:rgba(5,7,12,.76);border:1px solid #ffffff35;color:#eee;font-size:14px;white-space:nowrap;backdrop-filter:blur(8px)}
 .status{position:absolute;left:16px;bottom:12px;z-index:3;color:#ffffff85;font-size:11px;letter-spacing:.04em}
-@media(max-width:650px){canvas{width:100vw;height:78vh}.topbar{top:13px}.hint{font-size:12px;bottom:18px}.scene{background-position:center}}
+@media(max-width:650px){canvas{width:100vw;height:88vh}.topbar{top:13px}.hint{font-size:12px;bottom:18px}.scene{background-position:center}}
 </style>
 </head>
 <body>
@@ -35,11 +36,14 @@ canvas:active{cursor:grabbing}
   <div class="fog-layer" aria-hidden="true"></div><div class="harbor-lights" aria-hidden="true"></div>
   <header class="topbar" aria-label="Spielername"><div class="crown">♛</div><div class="nameplate"><div class="username">MediFerry</div></div></header>
   <main class="stage"><canvas id="viewer" aria-label="3D-Charakter. Mit Finger oder Maus ziehen zum Drehen."></canvas></main>
-  <div class="hint">↔ &nbsp; Halten &amp; ziehen zum Drehen</div>
+  <div class="hint">↔ Ziehen: drehen &amp; hoch/runter · 2 Finger: zoomen</div>
   <div class="status">MEDIFERRY • 360° CHARACTER VIEWER • IDLE ANIMATION</div>
 </div>
 <script type="module">
-import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
+import * as THREE from 'three';
+import {GLTFLoader} from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/GLTFLoader.js';
+import {RoomEnvironment} from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/environments/RoomEnvironment.js';
+import {RoundedBoxGeometry} from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/geometries/RoundedBoxGeometry.js';
 
 const canvas=document.querySelector('#viewer');
 const renderer=new THREE.WebGLRenderer({canvas,antialias:true,alpha:true});
@@ -72,39 +76,130 @@ function makeCamoTexture(){
   for(let i=0;i<430;i++){x.fillStyle=colors[Math.floor(rand()*colors.length)];x.beginPath();let px=rand()*512,py=rand()*512;x.ellipse(px,py,8+rand()*27,4+rand()*14,rand()*Math.PI,0,Math.PI*2);x.fill()}
   const tex=new THREE.CanvasTexture(c);tex.wrapS=tex.wrapT=THREE.RepeatWrapping;tex.repeat.set(2,2);tex.colorSpace=THREE.SRGBColorSpace;return new THREE.MeshStandardMaterial({map:tex,roughness:.96});
 }
+const glove=mat('#0a0a0d',.7);
 const hoodie=camo;
+// ---------- Helfer: Stoffe, Koerperoberflaeche, Taschen, Gurt ----------
+const sq=v=>Math.sqrt(Math.max(0,v));
+const ribTex=(()=>{const c=document.createElement('canvas');c.width=64;c.height=16;const g=c.getContext('2d');g.fillStyle='#a9abb3';g.fillRect(0,0,64,16);g.fillStyle='#7d808a';for(let i=0;i<64;i+=4)g.fillRect(i,0,2,16);const t=new THREE.CanvasTexture(c);t.wrapS=t.wrapT=THREE.RepeatWrapping;t.repeat.set(8,1);t.colorSpace=THREE.SRGBColorSpace;return t})();
+const ribMat=new THREE.MeshStandardMaterial({map:ribTex,roughness:.95});
+function camoMat(w,h,ox=0,oy=0){const m=hoodie.clone();m.map=hoodie.map.clone();m.map.repeat.set(Math.max(.2,w*.6),Math.max(.2,h*.6));m.map.offset.set(ox,oy);m.map.needsUpdate=true;return m}
+// Oberkoerper als Ellipsoide [cx,cy,cz,rx,ry,rz]
+const TS=[[0,2.12,0,.67,.78,.37],[0,2.42,-.015,.69,.47,.38],[0,1.54,0,.55,.20,.34],[0,1.47,0,.56,.105,.345]];
+function torsoSurf(x,y,dir){
+  let best=dir*9,bn=null;
+  for(const [cx,cy,cz,rx,ry,rz] of TS){
+    const q=1-((x-cx)/rx)**2-((y-cy)/ry)**2;if(q<=0)continue;
+    const z=cz+dir*rz*Math.sqrt(q);
+    if(bn===null||(dir>0?z>best:z<best)){best=z;const nx=(x-cx)/rx**2,ny=(y-cy)/ry**2,nz=(z-cz)/rz**2,l=Math.hypot(nx,ny,nz);bn=new THREE.Vector3(nx/l,ny/l,nz/l);}
+  }
+  return {z:best,n:bn||new THREE.Vector3(0,0,dir)};
+}
+const torsoFront=(x,y)=>torsoSurf(x,y,1), torsoBack=(x,y)=>torsoSurf(x,y,-1);
+// flache Box auf die Brust "schrumpfen"
+function wrapTorso(w,h,t,cx,cy,rot,m,off){
+  const geo=new THREE.BoxGeometry(w,h,t,Math.max(2,Math.round(w/.03)),Math.max(2,Math.round(h/.03)),1);
+  const p=geo.attributes.position,c=Math.cos(rot),s=Math.sin(rot);
+  for(let i=0;i<p.count;i++){
+    const vx=p.getX(i),vy=p.getY(i),vz=p.getZ(i),x=cx+vx*c-vy*s,y=cy+vx*s+vy*c;
+    p.setXYZ(i,x,y,torsoFront(x,y).z+off+vz+t/2);
+  }
+  geo.computeVertexNormals();
+  const me=new THREE.Mesh(geo,m);me.castShadow=me.receiveShadow=true;avatar.add(me);return me;
+}
+// Flaches Band entlang eines Pfades (Gurt)
+function ribbon(pts,nrm,w,th,m){
+  const pos=[],idx=[];
+  for(let i=0;i<pts.length;i++){
+    const t=pts[Math.min(i+1,pts.length-1)].clone().sub(pts[Math.max(i-1,0)]).normalize();
+    const b=new THREE.Vector3().crossVectors(t,nrm[i]).normalize();
+    const c=pts[i].clone().addScaledVector(nrm[i],th),a1=c.clone().addScaledVector(b,w/2),a2=c.clone().addScaledVector(b,-w/2);
+    pos.push(a1.x,a1.y,a1.z,a2.x,a2.y,a2.z);
+    if(i<pts.length-1){const k=i*2;idx.push(k,k+1,k+2,k+1,k+3,k+2);}
+  }
+  const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.Float32BufferAttribute(pos,3));g.setIndex(idx);g.computeVertexNormals();
+  const me=new THREE.Mesh(g,m);me.castShadow=true;return me;
+}
+// Taschen am Bein: Box um den (konischen) Oberschenkel gewickelt
+const legR=y=>.205+.04*(y-.95)/.47;
+function wrapLeg(side,arc,h,yc,phi0,t,tOff,m){
+  const geo=new THREE.BoxGeometry(t,h,arc,1,Math.max(2,Math.round(h/.035)),Math.max(2,Math.round(arc/.03)));
+  const p=geo.attributes.position;
+  for(let i=0;i<p.count;i++){
+    const y=yc+p.getY(i),R=legR(y),r=R+tOff+p.getX(i)+t/2,a=phi0+p.getZ(i)/R;
+    p.setXYZ(i,r*Math.cos(a),y,r*Math.sin(a));
+  }
+  geo.computeVertexNormals();
+  const me=new THREE.Mesh(geo,m);me.position.set(side*.34,0,0);me.scale.x=side;me.castShadow=me.receiveShadow=true;avatar.add(me);return me;
+}
+function cargoPocket(side){
+  const phi=.42;
+  wrapLeg(side,.25,.30,1.10,phi,.05,0,camoMat(.25,.3,side*.1,.2));          // Taschenkoerper
+  wrapLeg(side,.265,.115,1.235,phi,.022,.05,camoMat(.27,.12,.3,.5));         // Klappe
+  for(const d of [-.35,.35]){
+    wrapLeg(side,.03,.20,1.07,phi+d,.012,.05,rubber);                         // Gurtband Tasche
+    wrapLeg(side,.03,.125,1.235,phi+d,.012,.072,rubber);                      // Gurtband Klappe
+  }
+  wrapLeg(side,.26,.012,1.179,phi,.006,.072,mat('#c9cad1',.8));               // Naht Klappenkante
+  const R=legR(1.205)+.1,o=new THREE.Vector3(side*Math.cos(phi),0,Math.sin(phi));
+  const b=new THREE.Mesh(new THREE.CylinderGeometry(.02,.02,.014,16),metal);
+  b.position.set(side*.34+side*R*Math.cos(phi),1.205,R*Math.sin(phi));b.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0),o);b.castShadow=true;avatar.add(b);
+}
+function backPocket(side){
+  const q=-Math.PI/2;
+  wrapLeg(side,.2,.18,1.12,q,.016,0,camoMat(.2,.18,side*.3,.1));
+  wrapLeg(side,.21,.055,1.205,q,.012,.016,rubber);
+  const b=new THREE.Mesh(new THREE.SphereGeometry(.013,12,8),metal);b.position.set(side*.34,1.205,-(legR(1.205)+.035));avatar.add(b);
+}
+
 const smooth=(geo,material,x,y,z,sx=1,sy=1,sz=1,parent=avatar)=>{const m=new THREE.Mesh(geo,material);m.position.set(x,y,z);m.scale.set(sx,sy,sz);m.castShadow=true;m.receiveShadow=true;parent.add(m);return m};
 const sphere=(x,y,z,sx,sy,sz,material,parent=avatar)=>smooth(new THREE.SphereGeometry(1,32,24),material,x,y,z,sx,sy,sz,parent);
 const cylinderBetween=(a,b,r1,r2,material,parent=avatar,segments=18)=>{const A=new THREE.Vector3(...a),B=new THREE.Vector3(...b),d=new THREE.Vector3().subVectors(B,A);const m=new THREE.Mesh(new THREE.CylinderGeometry(r2,r1,d.length(),segments),material);m.position.copy(A).add(B).multiplyScalar(.5);m.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0),d.normalize());m.castShadow=true;m.receiveShadow=true;parent.add(m);return m};
 const box=(x,y,z,sx,sy,sz,material,parent=avatar)=>smooth(new THREE.BoxGeometry(sx,sy,sz),material,x,y,z,1,1,1,parent);
 
-// White low-top Air Force 1-inspired sneakers: broad toe, cupsole, eyelets, laces and side swoosh.
+// TN-style (Air Max Plus) sneakers: tapered upper, wavy cage ribs, visible air units, laces, tongue.
+// Farben hier anpassen:
+const tnBlack=mat('#f3f3f5',.45), tnSole=mat('#e4e4ea',.45), tnWhite=mat('#0b0b0e',.5), tnYellow=mat('#f2c21b',.4);
+const tnAccent=new THREE.MeshStandardMaterial({color:'#0b0b0e',roughness:.3,metalness:.2});
+const tnAir=new THREE.MeshPhysicalMaterial({color:'#c7dcff',roughness:.1,transparent:true,opacity:.6,clearcoat:1});
+function buildTN(x){
+  const g=new THREE.Group();g.position.set(x,0,0);avatar.add(g);
+  const S=(px,py,pz,sx,sy,sz,m)=>sphere(px,py,pz,sx,sy,sz,m,g);
+  const B=(px,py,pz,sx,sy,sz,m)=>box(px,py,pz,sx,sy,sz,m,g);
+  B(0,.016,.14,.42,.032,.86,tnBlack);
+  B(0,.05,.14,.43,.07,.72,tnSole);
+  S(0,.05,.44,.215,.05,.12,tnSole); S(0,.055,-.21,.215,.06,.09,tnSole);
+  S(0,.06,-.17,.225,.04,.09,tnAir); S(0,.06,.36,.225,.035,.08,tnAir);
+  B(0,.13,.08,.41,.09,.52,tnBlack);
+  S(0,.17,.36,.195,.085,.2,tnBlack);
+  S(0,.23,.12,.205,.13,.26,tnBlack);
+  S(0,.25,-.1,.20,.15,.17,tnBlack);
+  S(0,.37,-.07,.195,.065,.17,tnBlack);
+  S(0,.15,.46,.12,.055,.10,tnAccent);
+  S(0,.24,-.255,.075,.11,.035,tnAccent);
+  for(const s of [-1,1])for(let r=0;r<3;r++){
+    const pts=[];
+    for(let k=0;k<=6;k++)pts.push(new THREE.Vector3(s*.207,.12+r*.055+Math.sin(k*1.0+r*1.3)*.022+k*.004,-.12+k*.057));
+    const tube=new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts),28,.012,6,false),tnAccent);
+    tube.castShadow=true;g.add(tube);
+  }
+  for(let i=0;i<5;i++){
+    const z=.26-i*.07,m=.23+.13*Math.sqrt(Math.max(0,1-((z-.12)/.26)**2));
+    const l=B(0,m+.012,z,.2,.016,.026,tnWhite);l.rotation.y=(i%2?1:-1)*.18;
+  }
+  B(0,.375,.01,.13,.06,.05,tnYellow);
+}
 for(const side of [-1,1]){
   const x=side*.34;
-  smooth(new THREE.BoxGeometry(.47,.17,.79),mat('#f4f4f1',.48),x,.155,.12);
-  box(x,.105,.12,.475,.035,.79,mat('#c9cbd0',.62));
-  sphere(x,.285,.105,.225,.16,.37,mat('#f5f5f2',.43));
-  sphere(x,.275,.355,.19,.115,.19,mat('#fafaf8',.4));
-  sphere(x,.355,-.205,.18,.09,.12,mat('#e5e6e4',.5));
-  box(x,.405,.035,.12,.055,.34,mat('#e7e8e6',.45));
-  for(let i=0;i<5;i++){
-    const z=.245-i*.085;
-    const lace=box(x,.445,z,.205,.018,.027,mat('#ffffff',.38));
-    lace.rotation.y=(i%2?1:-1)*side*.18;
-  }
-  const swoosh=sphere(x+side*.215,.305,.015,.022,.052,.205,mat('#24262c',.55));
-  swoosh.rotation.y=side*.12;
-  for(let row=0;row<2;row++)for(let col=0;col<4;col++){
-    sphere(x-.075+col*.05,.365,.39+row*.025,.008,.006,.008,mat('#c8c9c8',.9));
-  }
+  buildTN(x);
   cylinderBetween([x,.39,0],[x,.59,0],.12,.115,mat('#f0f0ee',.78));
   const legmat=hoodie;
   cylinderBetween([x,.56,0],[x,.98,0],.19,.205,legmat);
   sphere(x,.88,0,.205,.25,.205,legmat);
   cylinderBetween([x,.95,0],[x,1.42,0],.205,.245,legmat);
   sphere(x,1.24,0,.225,.28,.22,legmat);
-  cylinderBetween([x,.55,0],[x,.68,0],.205,.19,hoodie);
+  cylinderBetween([x,.55,0],[x,.68,0],.205,.19,ribMat);
   cylinderBetween([x+side*.19,1.02,.025],[x+side*.19,1.36,.025],.012,.012,metal);
+  cargoPocket(side);
 }
 
 // torso and hoodie silhouette
@@ -112,7 +207,7 @@ const breathingTorso=sphere(0,2.12,0,.67,.78,.37,hoodie);
 const upperTorso=sphere(0,2.42,-.015,.69,.47,.38,hoodie);
 sphere(0,1.54,0,.55,.20,.34,hoodie);
 // lower hoodie hem ribbing
-for(let i=0;i<9;i++)box(-.42+i*.105,1.48,.315,.025,.13,.025,mat('#656873'));
+sphere(0,1.47,0,.565,.105,.35,ribMat);
 // sleeves with relaxed natural angle
 for(const side of [-1,1]){
   const shoulder=[side*.53,2.48,0],elbow=[side*.73,1.93,.025],wrist=[side*.79,1.52,.10];
@@ -122,26 +217,61 @@ for(const side of [-1,1]){
   cylinderBetween(elbow,wrist,.19,.145,hoodie);
   sphere(...wrist,.15,.16,.15,hoodie);
   // knitted cuffs
-  cylinderBetween([side*.79,1.43,.10],[side*.79,1.59,.10],.15,.15,mat('#aeb0b8'));
+  cylinderBetween([side*.79,1.43,.10],[side*.79,1.59,.10],.15,.15,ribMat);
   // visible hands, fingers
-  sphere(side*.79,1.29,.12,.135,.16,.12,skin);
-  for(let f=0;f<4;f++)cylinderBetween([side*.79+(f-1.5)*.045,1.27,.19],[side*.79+(f-1.5)*.05,1.18,.20],.025,.018,skin,avatar,10);
-  cylinderBetween([side*.68,1.32,.14],[side*.64,1.25,.20],.035,.025,skin,avatar,10);
+  sphere(side*.79,1.29,.12,.135,.16,.12,glove);
+  for(let f=0;f<4;f++)cylinderBetween([side*.79+(f-1.5)*.045,1.27,.19],[side*.79+(f-1.5)*.05,1.18,.20],.025,.018,glove,avatar,10);
+  cylinderBetween([side*.68,1.32,.14],[side*.64,1.25,.20],.035,.025,glove,avatar,10);
+  cylinderBetween([side*.79,1.37,.10],[side*.79,1.43,.10],.158,.158,dark,avatar,20);
+  box(side*.79,1.40,.255,.11,.075,.02,metal);
 }
 
-// hoodie hood behind head, black balaclava and visible eye opening
-sphere(0,3.18,-.12,.43,.50,.38,hoodie);
-cylinderBetween([0,2.78,0],[0,3.03,0],.18,.18,skin);
-const headMesh=sphere(0,3.34,.035,.335,.43,.30,black);
-// balaclava front and eye slit
-sphere(0,3.24,.245,.29,.29,.11,dark);
-box(0,3.42,.335,.43,.105,.035,black);
+// ---- Kopf: Sturmhaube + Gesicht, darueber Kapuze mit ovaler Gesichtsoeffnung ----
+const headMesh=new THREE.Group();avatar.add(headMesh);
+{
+const bk=mat('#07080b',.95), bk2=mat('#101217',.95), eyeW=mat('#ebe8e1',.4), iris=mat('#4f7f86',.3), pupil=mat('#050505',.3), brow=mat('#241a15',.9);
+const HS=(x,y,z,sx,sy,sz,m)=>sphere(x,y,z,sx,sy,sz,m,headMesh);
+cylinderBetween([0,2.78,0],[0,3.12,.02],.2,.17,bk,headMesh);
+HS(0,3.37,.02,.27,.34,.29,bk);
+HS(0,3.16,.09,.205,.17,.2,bk);
+HS(0,3.30,.275,.04,.07,.04,bk2);
+HS(0,3.19,.287,.075,.01,.012,bk2);
+HS(0,3.43,.215,.205,.06,.09,skin);
 for(const side of [-1,1]){
-  sphere(side*.105,3.425,.36,.055,.025,.018,mat('#c1a58d'));
-  sphere(side*.105,3.426,.375,.022,.014,.01,black);
+  HS(side*.085,3.435,.29,.038,.024,.02,eyeW);
+  HS(side*.085,3.435,.305,.019,.019,.012,iris);
+  HS(side*.085,3.435,.314,.008,.008,.005,pupil);
+  HS(side*.09,3.49,.288,.062,.011,.02,brow);
 }
-// top of hood and rim seam
-const hoodRim=new THREE.Mesh(new THREE.TorusGeometry(.345,.035,12,48),mat('#858892'));hoodRim.position.set(0,3.39,.02);hoodRim.scale.set(1,1.15,.8);avatar.add(hoodRim);
+// Kapuze: Ellipsoid mit ausgeschnittener Gesichtsoeffnung
+const hc=[0,3.33,-.07], hr=[.36,.45,.40];
+const hoodMat=hoodie.clone();hoodMat.side=THREE.DoubleSide;
+const lining=new THREE.MeshStandardMaterial({color:'#15161b',roughness:.95,side:THREE.BackSide});
+const hg=new THREE.SphereGeometry(1,56,40,0,Math.PI*2,0,2.75);
+const idx=hg.index.array,pos=hg.attributes.position,keep=[];
+for(let i=0;i<idx.length;i+=3){
+  let ux=0,uy=0,uz=0;
+  for(let k=0;k<3;k++){ux+=pos.getX(idx[i+k]);uy+=pos.getY(idx[i+k]);uz+=pos.getZ(idx[i+k]);}
+  ux/=3;uy/=3;uz/=3;
+  const wx=hr[0]*ux,wy=hc[1]+hr[1]*uy;
+  if(!(uz>.1&&(wx/.235)**2+((wy-3.33)/.32)**2<1))keep.push(idx[i],idx[i+1],idx[i+2]);
+}
+hg.setIndex(keep);
+const hood=new THREE.Mesh(hg,hoodMat);hood.position.set(...hc);hood.scale.set(...hr);hood.castShadow=hood.receiveShadow=true;avatar.add(hood);
+const inner=new THREE.Mesh(hg,lining);inner.position.set(...hc);inner.scale.set(hr[0]*.97,hr[1]*.97,hr[2]*.97);avatar.add(inner);
+// Saum um die Gesichtsoeffnung
+const rp=[];for(let k=0;k<40;k++){const t=k/40*Math.PI*2,x=.245*Math.cos(t),y=3.33+.335*Math.sin(t);
+  const q=1-(x/hr[0])**2-((y-hc[1])/hr[1])**2;rp.push(new THREE.Vector3(x,y,hc[2]+hr[2]*Math.sqrt(Math.max(0,q))+.004));}
+const rim=new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(rp,true),80,.032,8,true),mat('#aeb0b8',.85));rim.castShadow=true;avatar.add(rim);
+// Kapuzen-Panelnaehte
+const pm=mat('#6b6e78',.9);
+for(const a of [-.6,.6]){
+  const pts=[];for(let k=0;k<=12;k++){const th=.12+k*.19;pts.push(new THREE.Vector3(hr[0]*1.012*Math.sin(th)*Math.sin(a),hc[1]+hr[1]*1.012*Math.cos(th),hc[2]-hr[2]*1.012*Math.sin(th)*Math.cos(a)));}
+  avatar.add(new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts),48,.007,6,false),pm));
+}
+// Kordeln aus der Kapuze
+for(const side of [-1,1])cylinderBetween([side*.19,3.03,.2],[side*.14,2.68,.33],.014,.014,mat('#d0d1d5'),avatar,8);
+}
 
 // Subtle stitching on the tracksuit panels
 for(const side of [-1,1]){
@@ -153,41 +283,175 @@ box(0,2.05,.376,.022,.73,.018,metal);
 for(const side of [-1,1]){
   cylinderBetween([side*.13,2.68,.32],[side*.15,2.35,.37],.014,.014,mat('#d0d1d5'),avatar,8);
   sphere(side*.15,2.33,.37,.025,.04,.025,metal);
-  // pocket outlines
-  const pocket=box(side*.32,1.78,.335,.30,.20,.025,mat('#737680'));
-  box(side*.32,1.88,.35,.30,.018,.018,metal);
 }
 // ribbed waistband / cuffs details
-box(0,1.49,.02,1.08,.12,.40,mat('#777a83'));
 
-// Crossbody strap across chest from right shoulder to left hip, with stitched edges
-cylinderBetween([.42,2.75,.30],[-.37,1.42,.34],.085,.085,rubber,avatar,16);
-cylinderBetween([.46,2.76,.345],[-.33,1.43,.385],.009,.009,mat('#777982'),avatar,8);
-// messenger bag at left hip
-sphere(-.42,1.48,.28,.30,.34,.17,dark);
-box(-.42,1.53,.435,.43,.34,.055,rubber);
-box(-.42,1.70,.47,.43,.035,.025,metal);
-box(-.42,1.52,.48,.025,.22,.015,metal);
-sphere(-.42,1.36,.47,.035,.035,.018,metal);
+// ---- Gurttasche (Bauchtasche) mit flachem Gurt + Brusttaschen mit Reissverschluss ----
+{
+const Vv=(x,y,z)=>new THREE.Vector3(x,y,z);
+const webMat=new THREE.MeshStandardMaterial({color:'#0b0c0f',roughness:.85,side:THREE.DoubleSide});
+const tape=mat('#050507',.8), trimM=mat('#1c1d24',.7), stitchM=mat('#c9cad1',.8);
+const zipM=new THREE.MeshStandardMaterial({color:'#9fa2ad',roughness:.3,metalness:.75});
+// Gurt: Tasche -> rechte Schulter -> ueber den Ruecken -> linke Seite -> Tasche
+const P=[],N=[],push=(p,n)=>{P.push(p);N.push(n.clone().normalize())};
+for(let i=0;i<=16;i++){const t=i/16,x=-.04+.36*t,y=1.79+.955*t,f=torsoFront(x,y);push(Vv(x,y,f.z),f.n)}
+for(let k=1;k<=14;k++){const x=.32,z=.196-k/14*.466,y=2.42+.47*sq(1-(x/.69)**2-((z+.015)/.38)**2);push(Vv(x,y,z),Vv(x/.4761,(y-2.42)/.2209,(z+.015)/.1444))}
+for(let i=0;i<=18;i++){const t=i/18,x=.32-.72*t,y=2.692-.922*t,f=torsoBack(x,y);push(Vv(x,y,f.z),f.n)}
+{const a=.599,d=.3307,y=1.77;for(let i=1;i<=10;i++){const th=2.409-i/10*(2.409-.7326),x=-a*Math.sin(th),z=d*Math.cos(th);push(Vv(x,y,z),Vv(x/.449,(y-2.12)/.6084,z/.1369))}}
+avatar.add(ribbon(P,N,.075,.013,webMat));
+// Tasche
+const bagG=new THREE.Group(),W=.44,H=.34,D=.12;
+const RB=(w,h,d,r,m,x,y,z)=>{const me=new THREE.Mesh(new RoundedBoxGeometry(w,h,d,4,r),m);me.position.set(x,y,z);me.castShadow=me.receiveShadow=true;bagG.add(me);return me};
+const bagMat=new THREE.MeshStandardMaterial({color:'#101116',roughness:.58});
+RB(W,H,D,.05,bagMat,0,0,0);
+RB(W*1.012,H*1.012,.012,.05,trimM,0,0,0);
+RB(W*.92,H*.5,.026,.025,trimM,0,-H*.2,D/2+.004);
+RB(W*.8,.012,.012,.004,tape,0,-H*.2+H*.25-.004,D/2+.016);
+RB(W*.84,.014,.014,.004,tape,0,H/2-.032,D/2+.004);
+RB(.03,.05,.012,.006,zipM,W*.3,H/2-.05,D/2+.012);
+RB(.026,.045,.012,.006,zipM,-W*.28,-H*.2+H*.25-.03,D/2+.024);
+for(const sd of [-1,1]){
+  RB(.06,.045,.05,.01,trimM,sd*(W/2-.04),H/2+.01,0);
+  const ring=new THREE.Mesh(new THREE.TorusGeometry(.026,.006,8,20),zipM);ring.position.set(sd*(W/2-.04),H/2+.04,0);ring.castShadow=true;bagG.add(ring);
+}
+{const c=document.createElement('canvas');c.width=c.height=128;const g=c.getContext('2d');g.fillStyle='#e9e7ee';g.font='96px serif';g.textAlign='center';g.textBaseline='middle';g.fillText('\u265B',64,70);
+const ct=new THREE.CanvasTexture(c);ct.colorSpace=THREE.SRGBColorSpace;
+const lg=new THREE.Mesh(new THREE.PlaneGeometry(.12,.12),new THREE.MeshStandardMaterial({map:ct,transparent:true,roughness:.8,depthWrite:false}));lg.position.set(0,-H*.2,D/2+.02);bagG.add(lg);}
+{const bx=-.22,by=1.62,z0=torsoFront(bx,by).z,zR=torsoFront(bx+W/2,by).z,zL=torsoFront(bx-W/2,by).z,zT=torsoFront(bx,by+H/2).z,zB=torsoFront(bx,by-H/2).z;
+const bn=new THREE.Vector3(-(zR-zL)/W,-(zT-zB)/H,1).normalize();
+bagG.position.set(bx,by,z0).addScaledVector(bn,D/2-.02);
+bagG.quaternion.setFromUnitVectors(new THREE.Vector3(0,0,1),bn);bagG.rotateZ(-.1);avatar.add(bagG);}
+// Brusttaschen (schraeg, mit Zipper)
+for(const sd of [-1,1]){
+  const cx=sd*.27,cy=2.28,rot=sd*.16,c=Math.cos(rot),sn=Math.sin(rot);
+  const L=(ox,oy)=>[cx+ox*c-oy*sn,cy+ox*sn+oy*c];
+  wrapTorso(.17,.40,.012,cx,cy,rot,camoMat(.17,.4,sd*.2,0),0);
+  wrapTorso(.034,.36,.008,cx,cy,rot,tape,.010);
+  wrapTorso(.006,.36,.004,cx,cy,rot,zipM,.018);
+  for(const ox of [-.078,.078]){const [px,py]=L(ox,0);wrapTorso(.004,.40,.004,px,py,rot,stitchM,.010)}
+  for(const oy of [-.196,.196]){const [px,py]=L(0,oy);wrapTorso(.17,.004,.004,px,py,rot,stitchM,.010)}
+  const [px,py]=L(0,.17);wrapTorso(.02,.05,.012,px,py,rot,zipM,.022);
+}
+}
+
+// Kronen-Logo auf der Brust
+{const c=document.createElement('canvas');c.width=c.height=128;const g=c.getContext('2d');g.fillStyle='#f5f3fa';g.font='96px serif';g.textAlign='center';g.textBaseline='middle';g.fillText('\u265B',64,70);
+const t=new THREE.CanvasTexture(c);t.colorSpace=THREE.SRGBColorSpace;
+const logo=new THREE.Mesh(new THREE.PlaneGeometry(.16,.16),new THREE.MeshBasicMaterial({map:t,transparent:true,depthWrite:false}));logo.position.set(-.2,2.6,torsoFront(-.2,2.6).z+.006);avatar.add(logo);}
+
+// ---- Rueckseite: Print, Naehte, Taschen ----
+{
+const seam=mat('#6b6e78',.9);
+const tube=(pts,r,m)=>{const t=new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts.map(p=>new THREE.Vector3(...p))),pts.length*6,r,8,false),m);t.castShadow=true;avatar.add(t);return t};
+const hp=[];for(let i=0;i<=10;i++){const y=3.74-i*.074,u=(y-3.33)/.45;hp.push([0,y,-.07-.405*sq(1-u*u)]);}
+tube(hp,.009,seam);
+const yp=[];for(let i=0;i<=12;i++){const x=-.45+i*.075;yp.push([x,2.72,torsoBack(x,2.72).z-.006]);}
+tube(yp,.008,seam);
+const cp=[];for(let i=0;i<=8;i++){const y=2.7-i*.12;cp.push([0,y,torsoBack(0,y).z-.006]);}
+tube(cp,.008,seam);
+// Back-Print: Krone + MEDIFERRY, oberhalb des Gurts
+const c=document.createElement('canvas');c.width=c.height=512;const g=c.getContext('2d');
+g.fillStyle='#efedf5';g.textAlign='center';g.textBaseline='middle';
+g.font='240px serif';g.fillText('\u265B',256,185);
+g.font='800 64px Inter,Arial,sans-serif';if('letterSpacing' in g)g.letterSpacing='8px';g.fillText('MEDIFERRY',256,380);
+g.fillRect(96,440,320,5);
+const tex=new THREE.CanvasTexture(c);tex.colorSpace=THREE.SRGBColorSpace;tex.anisotropy=4;
+const pcx=-.14,pcy=2.5,pg=new THREE.PlaneGeometry(.34,.34,16,16),pa=pg.attributes.position,zc=torsoBack(pcx,pcy).z-.01;
+for(let i=0;i<pa.count;i++)pa.setZ(i,zc-(torsoBack(pcx-pa.getX(i),pcy+pa.getY(i)).z-.01));
+pg.computeVertexNormals();
+const print=new THREE.Mesh(pg,new THREE.MeshStandardMaterial({map:tex,transparent:true,roughness:.85,depthWrite:false}));
+print.rotation.y=Math.PI;print.position.set(pcx,pcy,zc);avatar.add(print);
+for(const side of [-1,1])backPocket(side);
+}
 
 // Circular display platform
 const ring=new THREE.Mesh(new THREE.TorusGeometry(1.02,.012,8,96),new THREE.MeshBasicMaterial({color:0xc8b8ff,transparent:true,opacity:.8}));
 ring.rotation.x=Math.PI/2;ring.position.y=.025;avatar.add(ring);
 const floor=new THREE.Mesh(new THREE.CircleGeometry(1.08,64),new THREE.MeshBasicMaterial({color:0x11131a,transparent:true,opacity:.20}));floor.rotation.x=-Math.PI/2;floor.position.y=.008;avatar.add(floor);
 
-let dragging=false,lastX=0,rot=0;
-canvas.addEventListener('pointerdown',e=>{dragging=true;lastX=e.clientX;canvas.setPointerCapture(e.pointerId)});
-canvas.addEventListener('pointermove',e=>{if(!dragging)return;rot+=(e.clientX-lastX)*.012;lastX=e.clientX;avatar.rotation.y=rot});
-canvas.addEventListener('pointerup',()=>dragging=false);
-canvas.addEventListener('pointercancel',()=>dragging=false);
-canvas.addEventListener('wheel',e=>{camera.position.z=Math.max(7.2,Math.min(12,camera.position.z+e.deltaY*.006));},{passive:true});
+// Alles Prozedurale in eine Gruppe, damit ein .glb-Modell es ersetzen kann
+const proc=new THREE.Group();
+[...avatar.children].filter(c=>c!==ring&&c!==floor).forEach(c=>proc.add(c));
+avatar.add(proc);
+
+// ---- MediFerry: rigged Mixamo character + endlos laufende Telefonier-Animation ----
+const gltfLoader=new GLTFLoader();
+let mixer=null,glbRoot=null,envTex=null,prevT=0;
+function addPhoneToHand(root){
+  // Smartphone als eigenes 3D-Objekt am animierten rechten Handknochen.
+  const hand=root.getObjectByName('mixamorigRightHand');
+  if(!hand){console.warn('Rechter Handknochen nicht gefunden; Handy wurde nicht angeheftet.');return;}
+  const phone=new THREE.Group();
+  const body=new THREE.Mesh(
+    new THREE.BoxGeometry(.075,.145,.012),
+    new THREE.MeshStandardMaterial({color:0x11131a,metalness:.72,roughness:.24})
+  );
+  body.castShadow=true; body.receiveShadow=true; phone.add(body);
+  const screen=new THREE.Mesh(
+    new THREE.PlaneGeometry(.066,.132),
+    new THREE.MeshStandardMaterial({color:0x171d2b,metalness:.25,roughness:.18,emissive:0x080d18,emissiveIntensity:.35})
+  );
+  screen.position.z=.0065; phone.add(screen);
+  const cameraDot=new THREE.Mesh(
+    new THREE.CircleGeometry(.003,12),
+    new THREE.MeshBasicMaterial({color:0x65718a})
+  );
+  cameraDot.position.set(0,.065,.0068); phone.add(cameraDot);
+  // Erstposition zum Testen; nach dem ersten Live-Screenshot können wir sie fein ausrichten.
+  phone.position.set(.015,.075,.012);
+  phone.rotation.set(.08,0,-.12);
+  hand.add(phone);
+}
+function showModel(url){
+  gltfLoader.load(url,gltf=>{
+    if(glbRoot)avatar.remove(glbRoot);
+    const root=gltf.scene;
+    let bb=new THREE.Box3().setFromObject(root);
+    root.scale.setScalar(3.75/bb.getSize(new THREE.Vector3()).y);
+    bb=new THREE.Box3().setFromObject(root);const c=bb.getCenter(new THREE.Vector3());
+    root.position.set(-c.x,-bb.min.y,-c.z);
+    root.traverse(o=>{if(o.isMesh){o.castShadow=o.receiveShadow=true;if(o.material&&'envMapIntensity' in o.material)o.material.envMapIntensity=.7}});
+    addPhoneToHand(root);
+    glbRoot=new THREE.Group();glbRoot.add(root);avatar.add(glbRoot);
+    proc.visible=false;
+    if(!envTex)envTex=new THREE.PMREMGenerator(renderer).fromScene(new RoomEnvironment(),.04).texture;
+    scene.environment=envTex;
+    mixer=gltf.animations.length?new THREE.AnimationMixer(root):null;
+    if(mixer){
+      const action=mixer.clipAction(gltf.animations[0]);
+      action.setLoop(THREE.LoopRepeat,Infinity);
+      action.clampWhenFinished=false;
+      action.play();
+    }
+  },undefined,()=>console.warn('Telefonier-GLB konnte nicht geladen werden:',url));
+}
+showModel(new URLSearchParams(location.search).get('model')||'Talking_On_Phone.glb');
+addEventListener('dragover',e=>e.preventDefault());
+addEventListener('drop',e=>{e.preventDefault();const f=e.dataTransfer.files[0];if(f&&/\.(glb|gltf)$/i.test(f.name))showModel(URL.createObjectURL(f))});
+
+let dragging=false,camY=2.15,zoomZ=8.6;
+const ptrs=new Map();let pinch0=0,zoom0=0;
+const updCam=()=>{camera.position.set(0,camY,zoomZ);camera.lookAt(0,camY,0)};updCam();
+const pdist=()=>{const [a,b]=[...ptrs.values()];return Math.hypot(a.x-b.x,a.y-b.y)};
+canvas.addEventListener('pointerdown',e=>{ptrs.set(e.pointerId,{x:e.clientX,y:e.clientY});canvas.setPointerCapture(e.pointerId);dragging=true;if(ptrs.size===2){pinch0=pdist();zoom0=zoomZ}});
+canvas.addEventListener('pointermove',e=>{
+  const p=ptrs.get(e.pointerId);if(!p)return;
+  if(ptrs.size===2){p.x=e.clientX;p.y=e.clientY;if(pinch0)zoomZ=Math.max(3.2,Math.min(12,zoom0*pinch0/pdist()));updCam();return}
+  avatar.rotation.y+=(e.clientX-p.x)*.012;
+  camY=Math.max(.5,Math.min(3.4,camY+(e.clientY-p.y)*.01));
+  p.x=e.clientX;p.y=e.clientY;updCam();
+});
+const endPtr=e=>{ptrs.delete(e.pointerId);if(!ptrs.size)dragging=false;pinch0=0};
+canvas.addEventListener('pointerup',endPtr);
+canvas.addEventListener('pointercancel',endPtr);
+canvas.addEventListener('wheel',e=>{zoomZ=Math.max(3.2,Math.min(12,zoomZ+e.deltaY*.006));updCam()},{passive:true});
 function resize(){const w=canvas.clientWidth,h=canvas.clientHeight;renderer.setSize(w,h,false);camera.aspect=w/h;camera.updateProjectionMatrix()}
 new ResizeObserver(resize).observe(canvas);
 const clock=new THREE.Clock();
 const baseY=avatar.position.y;
 function animate(){
   requestAnimationFrame(animate);
-  const t=clock.getElapsedTime();
+  const t=clock.getElapsedTime();if(mixer)mixer.update(t-prevT);prevT=t;
   // Calm idle: gentle breathing, tiny weight shift and almost imperceptible head motion.
   const breath=Math.sin(t*1.55);
   breathingTorso.scale.y=.78*(1+breath*.009);
